@@ -122,24 +122,48 @@ jobs:
             --routes /:80 \
             --instance-type free # Usa a instância gratuita do Koyeb
 
-  # --- JOB 4: Limpeza (Cleanup) com Aprovação Manual ---
-  # Este job depende do deploy, mas só roda após uma aprovação manual.
+   # --- JOB 4: Limpeza (Cleanup) com Aprovação Manual ---
   cleanup:
     needs: deploy
     environment:
       name: cleanup
-      url: https://app.koyeb.com/ # Pode colocar um link útil aqui
     runs-on: ubuntu-latest
     steps:
       - name: Instalar Koyeb CLI
         run: |
           curl -fsSL https://raw.githubusercontent.com/koyeb/koyeb-cli/master/install.sh | sh
           echo "$HOME/.koyeb/bin" >> $GITHUB_PATH
+
       - name: Configurar Token Koyeb
-        run: echo "KOYEB_TOKEN=${{ secrets.KOYEB_TOKEN }}" >> $GITHUB_ENV
-      # Passo: Destruir a infraestrutura (app e serviço) no Koyeb.
+        run: |
+          echo "KOYEB_TOKEN=${{ secrets.KOYEB_TOKEN }}" >> $GITHUB_ENV
+
+      # CORREÇÃO DEFINITIVA - SEM --yes
       - name: Destruir infraestrutura no Koyeb (cleanup)
         run: |
           APP_NAME="ms-saudacoes-${{ github.actor }}-${{ github.run_id }}"
-          echo "Destruindo app $APP_NAME..."
-          koyeb app delete "$APP_NAME" --yes # O '--yes' confirma a ação automaticamente.
+          echo "=== INICIANDO CLEANUP DO APP: $APP_NAME ==="
+          
+          # Verifica se o app existe
+          if koyeb app list | grep -q "$APP_NAME"; then
+            echo "App encontrado. Deletando..."
+            
+            # MÉTODO 1: Com 'yes' via pipe (NÃO USA FLAG --yes)
+            echo "y" | koyeb app delete "$APP_NAME" && {
+              echo "✓ App deletado com sucesso!"
+              exit 0
+            }
+            
+            # MÉTODO 2: Se falhar, tenta via API direta
+            echo "Tentando via API direta..."
+            APP_ID=$(koyeb app get "$APP_NAME" -o json | jq -r .id)
+            curl -X DELETE \
+              -H "Authorization: Bearer $KOYEB_TOKEN" \
+              "https://app.koyeb.com/v1/apps/$APP_ID" && {
+              echo "✓ App deletado via API!"
+              exit 0
+            }
+          else
+            echo "App não encontrado. Nada a deletar."
+            exit 0
+          fi
