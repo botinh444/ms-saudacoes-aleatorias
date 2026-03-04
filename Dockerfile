@@ -1,30 +1,25 @@
-# Dockerfile para aplicação Go
+# Estágio de build
 FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-# Copia os arquivos de dependência
-COPY go.mod go.sum ./
-RUN go mod download
-
-# Copia o código fonte
-COPY . .
+# Copia os arquivos de módulo
+COPY go.mod ./
+COPY main.go ./
 
 # Compila a aplicação
 RUN go build -o main .
 
-# Imagem final menor
+# Estágio final
 FROM alpine:latest
-
-RUN apk --no-cache add ca-certificates
 
 WORKDIR /root/
 
 # Copia o binário compilado
 COPY --from=builder /app/main .
 
-# Expõe a porta que a aplicação usa (geralmente 8080 para Go)
+# Expõe a porta
 EXPOSE 8080
 
-# Comando para executar a aplicação
+# Executa a aplicação
 CMD ["./main"]
