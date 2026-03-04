@@ -126,8 +126,6 @@ jobs:
   # Este job depende do deploy, mas só roda após uma aprovação manual.
   cleanup:
     needs: deploy
-    # O 'environment' é um recurso do GitHub Actions que permite adicionar
-    # proteções, como a aprovação manual, antes de um job rodar.
     environment:
       name: cleanup
       url: https://app.koyeb.com/ # Pode colocar um link útil aqui
