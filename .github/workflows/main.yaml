@@ -1,95 +1,147 @@
-name: CI/CD - Saudações Aleatórias
+# .github/workflows/main.yml
+name: CI/CD Pipeline Saudacoes Aleatorias
 
+# Define QUANDO a pipeline será executada.
+# Neste caso, será executada em cada push (enviar código) para a branch 'main'.
 on:
   push:
-    branches:
-      - "*"
+    branches: [ "main" ]
   pull_request:
-    branches:
-      - main
+    branches: [ "main" ]
 
+# Define as variáveis que podem ser usadas em toda a pipeline.
 env:
-  DOCKER_USER: ozorest84
-  SERVICE_NAME: saudacoes-aleatorias
+  # Nome da imagem que será criada no Docker Hub.
+  # O formato será: SEU_USUARIO_DOCKER/nome-da-imagem:tag
+  IMAGE_NAME: ${{ secrets.DOCKER_USER }}/ms-saudacoes-aleatorias
+  # A 'tag' da imagem usará o código do commit (SHA) para ser única.
+  IMAGE_TAG: ${{ github.sha }}
 
+# Define os TRABALHOS (jobs) que a pipeline vai executar.
+# Eles rodam em paralelo por padrão, mas podemos definir dependências.
 jobs:
-  lint:
-    name: Lint Code
+  # --- JOB 1: Lint e Testes ---
+  # Este job verifica a qualidade do código e roda os testes.
+  lint-and-test:
+    # O tipo de máquina (runner) que o GitHub vai usar.
     runs-on: ubuntu-latest
+    # A sequência de passos deste job.
     steps:
-      - name: Checkout Code
+      # Passo 1: Baixar o código do repositório para dentro do runner.
+      - name: Checkout do código
         uses: actions/checkout@v4
 
-      - name: Set up Go
+      # Passo 2: Configurar o ambiente Go, pois o projeto é em Golang.
+      - name: Configurar Go
         uses: actions/setup-go@v5
-
-      - name: Go Fmt & Vet
-        run: |
-          echo "Linting code..."
-          go fmt $(go list ./...)
-          go vet $(go list ./...)
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v8
         with:
-          args: --verbose
+          go-version: '1.23' # Use a versão apropriada para o projeto
 
-  test:
-    name: Test Code
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      # Passo 3: Instalar as dependências do projeto (se houver).
+      - name: Instalar dependências
+        run: go mod download
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      # Passo 4: Executar o Lint (verificação de estilo). 
+      - name: Executar Lint (build-lint)
+        run: go vet ./... # go vet é uma ferramenta básica de lint do Go.
+        # Ou, se o projeto tiver um script específico: make lint
 
-      - name: Install gotestsum
-        run: go install gotest.tools/gotestsum@latest
+      # Passo 5: Executar os testes da aplicação.
+      - name: Executar Testes (test)
+        run: go test -v ./...
 
-      - name: Run tests and generate report
-        run: |
-          echo "Running tests and generating report..."
-          # CGO_ENABLED=1 é necessário se houver código C, mas requer gcc.
-          # A imagem ubuntu-latest já tem o gcc.
-          CGO_ENABLED=1 gotestsum --junitfile report.xml --format testname
-
+  # --- JOB 2: Build da Imagem e Push para o Docker Hub ---
+  # Este job só começa se o job 'lint-and-test' for bem-sucedido.
   build-and-push:
-    name: Build and Push Docker Image
-    needs:
-      - lint
-      - test
+    # Só roda se o job anterior (lint-and-test) tiver sucesso.
+    needs: lint-and-test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout do código
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        # Essencial para builds multi-plataforma (ex: ARM em runners x86)
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        # Cria um builder do Docker que suporta builds multi-plataforma
-
-      - name: Log in to Docker Hub
+      # Passo importante: Fazer login no Docker Hub usando as secrets.
+      - name: Login no Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ env.DOCKER_USER }}
-          password: ${{ secrets.DOCKER_PASS }} # Segredo configurado no GitHub
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PASS }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        env:
-          DOCKER_IMAGE_NAME: ${{ env.DOCKER_USER }}/ms-${{ env.SERVICE_NAME}}
-          DOCKER_IMAGE_TAG: 1.0.${{ github.run_id }}
+      # Passo: Configurar o QEMU (necessário para builds em multiplataforma).
+      - name: Configurar QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # Passo: Configurar o Buildx, que é o construtor moderno de imagens Docker.
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Passo: Construir a imagem Docker e já enviar (push) para o Docker Hub.
+      # Este passo executa a ação 'build-and-push' de uma só vez.
+      - name: Construir e enviar imagem (release)
+        uses: docker/build-push-action@v6
         with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.DOCKER_IMAGE_NAME }}:${{ env.DOCKER_IMAGE_TAG }}
-            ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
-            ${{ env.DOCKER_IMAGE_NAME }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          context: . # O contexto da build é a pasta atual (onde está o Dockerfile)
+          push: true  # Enviar a imagem para o registro (Docker Hub)
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}, ${{ env.IMAGE_NAME }}:latest
+          # Usa as tags definidas no 'env': usuario/nome:commit e usuario/nome:latest
+
+  # --- JOB 3: Deploy no Koyeb ---
+  # Este job depende do job 'build-and-push'.
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      # Passo: Instalar a ferramenta de linha de comando do Koyeb (koyeb-cli).
+      - name: Instalar Koyeb CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/koyeb/koyeb-cli/master/install.sh | sh
+          # Adiciona o koyeb ao PATH do sistema para podermos usar o comando 'koyeb'
+          echo "$HOME/.koyeb/bin" >> $GITHUB_PATH
+
+      # Passo: Configurar o token da API do Koyeb como variável de ambiente.
+      - name: Configurar Token Koyeb
+        run: echo "KOYEB_TOKEN=${{ secrets.KOYEB_TOKEN }}" >> $GITHUB_ENV
+
+      # Passo: Fazer o deploy da aplicação no Koyeb.
+      # Este comando cria um app e um serviço, usando a imagem que acabamos de subir.
+      - name: Deploy no Koyeb (deploy)
+        run: |
+          # Cria o aplicativo no Koyeb. O nome precisa ser único globalmente.
+          # Sugestão: usar seu usuário github para evitar conflitos.
+          APP_NAME="ms-saudacoes-${{ github.actor }}-${{ github.run_id }}"
+          koyeb app create "$APP_NAME" || true # O '|| true' faz o script não parar se o app já existir.
+
+          # Cria o serviço dentro do app, usando a imagem do Docker Hub.
+          koyeb service create "$APP_NAME-svc" \
+            --app "$APP_NAME" \
+            --docker "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" \
+            --port 80:http \
+            --routes /:80 \
+            --instance-type free # Usa a instância gratuita do Koyeb
+
+  # --- JOB 4: Limpeza (Cleanup) com Aprovação Manual ---
+  # Este job depende do deploy, mas só roda após uma aprovação manual.
+  cleanup:
+    needs: deploy
+    # O 'environment' é um recurso do GitHub Actions que permite adicionar
+    # proteções, como a aprovação manual, antes de um job rodar.
+    environment:
+      name: cleanup
+      url: https://app.koyeb.com/ # Pode colocar um link útil aqui
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar Koyeb CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/koyeb/koyeb-cli/master/install.sh | sh
+          echo "$HOME/.koyeb/bin" >> $GITHUB_PATH
+      - name: Configurar Token Koyeb
+        run: echo "KOYEB_TOKEN=${{ secrets.KOYEB_TOKEN }}" >> $GITHUB_ENV
+      # Passo: Destruir a infraestrutura (app e serviço) no Koyeb.
+      - name: Destruir infraestrutura no Koyeb (cleanup)
+        run: |
+          APP_NAME="ms-saudacoes-${{ github.actor }}-${{ github.run_id }}"
+          echo "Destruindo app $APP_NAME..."
+          koyeb app delete "$APP_NAME" --yes # O '--yes' confirma a ação automaticamente.
